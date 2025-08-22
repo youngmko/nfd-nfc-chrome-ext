@@ -19,7 +19,7 @@
 
 1. 이 저장소를 클론하거나 다운로드합니다.
    ```bash
-   git clone [https://github.com/youngmko/nfd-nfc-chrome-ext.git]
+   git clone https://github.com/youngmko/nfd-nfc-chrome-ext.git
    또는 우측 상단의 **Code → Download ZIP** 버튼으로 압축 파일을 내려받아 압축을 해제합니다.
 
 2. 브라우저에서 확장 프로그램 관리 페이지를 엽니다.  
