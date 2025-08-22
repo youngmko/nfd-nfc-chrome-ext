@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Gmail Korean Filename NFD→NFC Normalizer",
-  "version": "1.1.0",
-  "description": "Gmail에서 첨부파일 업로드 시 한글 파일명을 NFD에서 NFC로 정규화합니다.",
+  "name": "Gmail & Chat Korean Filename NFD→NFC Normalizer",
+  "version": "1.2.0",
+  "description": "Gmail/Google Chat에서 첨부파일 업로드 시 한글 파일명을 NFD에서 NFC로 정규화합니다.",
   "icons": {
     "16": "icon16.png",
     "48": "icon48.png",
@@ -10,7 +10,10 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://mail.google.com/*"],
+      "matches": [
+        "https://mail.google.com/*",
+        "https://chat.google.com/*"
+      ],
       "js": ["content-gmail.js"],
       "run_at": "document_start",
       "all_frames": true,

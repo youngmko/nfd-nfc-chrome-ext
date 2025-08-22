@@ -1,11 +1,10 @@
-// content-gmail.js
 (() => {
   // ---------- 공통 유틸 ----------
   function normalizeFiles(fileListLike) {
     const dt = new DataTransfer();
     let changed = false;
     for (const file of fileListLike) {
-      const nfcName = file.name.normalize('NFC');
+      const nfcName = (file.name || '').normalize('NFC');
       if (nfcName !== file.name) {
         const f2 = new File([file], nfcName, {
           type: file.type,
@@ -20,19 +19,54 @@
     return { files: dt.files, changed };
   }
 
-  function findComposeRoot(fromEl) {
-    return fromEl instanceof Element ? fromEl.closest('[role="dialog"]') : null;
+  // 붙여넣기에서 파일명이 비어있는 경우 확장자 추정
+  function guessExtByType(mime) {
+    if (!mime) return '';
+    const m = mime.toLowerCase();
+    if (m.includes('png')) return '.png';
+    if (m.includes('jpeg') || m.includes('jpg')) return '.jpg';
+    if (m.includes('gif')) return '.gif';
+    if (m.includes('webp')) return '.webp';
+    if (m.includes('pdf')) return '.pdf';
+    if (m.includes('plain')) return '.txt';
+    if (m.includes('html')) return '.html';
+    return '';
   }
 
-  function findNearestGmailFileInput(fromEl) {
-    const compose = findComposeRoot(fromEl);
-    const roots = compose ? [compose] : [document];
-    for (const root of roots) {
-      // Gmail은 compose 다이얼로그 내부에 hidden file input이 있음
-      const cands = root.querySelectorAll('input[type="file"][multiple]');
-      if (cands.length) return cands[0];
+  // ---------- 환경 판별 ----------
+  const isGmail = location.hostname === 'mail.google.com';
+  const isGChat = location.hostname === 'chat.google.com';
+
+  // ---------- 파일 input 탐색 (Gmail/Chat 겸용) ----------
+  function findNearestFileInput(fromEl) {
+    // 1) 현재 포커스/이벤트 위치 기준으로 가까운 컴포즈/대화 영역 스코프 찾기
+    let scope = null;
+
+    if (fromEl instanceof Element) {
+      // Gmail compose dialog
+      scope = fromEl.closest('[role="dialog"]');
+      // Chat 메시지 입력 영역(메시지 box/스페이스 pane)
+      if (!scope) {
+        scope =
+          fromEl.closest('[aria-label="Message"]') ||               // 일부 Chat 입력기
+          fromEl.closest('[aria-label="Message body"]') ||           // 변형
+          fromEl.closest('[aria-label="Type a message"]') ||         // 변형
+          fromEl.closest('[data-topic-id]') ||                       // 스레드/스페이스 컨테이너
+          fromEl.closest('[role="textbox"]');                        // 리치텍스트 본문
+      }
     }
-    return document.querySelector('input[type="file"][multiple]') || null;
+
+    const roots = scope ? [scope, document] : [document];
+
+    // 2) 스코프 내부에서 숨은 file input 우선 탐색
+    for (const root of roots) {
+      // Chat/Gmail 모두 대체로 hidden input[type=file] multiple 사용
+      const cands =
+        root.querySelectorAll('input[type="file"][multiple], input[type="file"]');
+      for (const el of cands) return el;
+    }
+
+    return null;
   }
 
   function injectFilesToInput(inputEl, files, { dispatch = true } = {}) {
@@ -50,7 +84,7 @@
     }
   }
 
-  // ---------- (유지) 파일 선택(change): 원본 change 차단 후 단 한 번만 재발생 ----------
+  // ---------- 파일 선택(change): 원본 change 차단 후 단 한 번만 재발생 ----------
   const reentryGuard = new WeakSet();
 
   document.addEventListener(
@@ -64,9 +98,9 @@
       if (!list || list.length === 0) return;
 
       const { files, changed } = normalizeFiles(list);
-      if (!changed) return; // 정규화 불필요 시 Gmail 기본 처리
+      if (!changed) return; // 정규화 불필요 → 기본 처리
 
-      // Gmail의 자체 change 핸들러까지 막아 중복 방지
+      // 원본 change를 차단하여 중복 방지
       e.stopImmediatePropagation();
       e.stopPropagation();
 
@@ -82,11 +116,10 @@
     true // 캡처 단계
   );
 
-  // ---------- (수정) 드래그&드롭: 캡처 단계에서 완전 차단 후 한 번만 주입 ----------
+  // ---------- 드래그&드롭 ----------
   document.addEventListener(
     'dragover',
     (e) => {
-      // 우리가 처리할 drop임을 알리기 위해 기본 동작 방지 (필수는 아니지만 깔끔)
       const dt = e.dataTransfer;
       if (dt) dt.dropEffect = 'copy';
     },
@@ -94,72 +127,146 @@
   );
 
   document.addEventListener(
-  'drop',
-  (e) => {
-    const dt = e.dataTransfer;
-    if (!dt || dt.files.length === 0) return;
+    'drop',
+    (e) => {
+      const dt = e.dataTransfer;
+      if (!dt || dt.files.length === 0) return;
 
-    const { files, changed } = normalizeFiles(dt.files);
-    if (!changed) return; // 정규화 불필요 → Gmail 기본 처리(오버레이도 정상 종료)
+      const { files, changed } = normalizeFiles(dt.files);
+      if (!changed) return; // 정규화 필요 없으면 기본 처리
 
-    const input = findNearestGmailFileInput(e.target);
-    if (!input) return;
+      const input = findNearestFileInput(e.target);
+      if (!input) return;
 
-    // Gmail의 실제 drop 처리(업로드)를 막고 우리가 주입
-    e.preventDefault();
-    e.stopImmediatePropagation();
-    e.stopPropagation();
+      // 기본 drop 차단 후 우리가 주입
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      e.stopPropagation();
 
-    injectFilesToInput(input, files, { dispatch: true });
+      injectFilesToInput(input, files, { dispatch: true });
 
-    // 🔽 오버레이 닫기: Gmail 내부 핸들러가 동작하도록 빈 드롭/드래그 종료 이벤트 합성
-    try {
-      const targetEl = (e.target instanceof Element) ? e.target : document;
+      // (Gmail 전용) 드롭 오버레이 정리: 합성 이벤트
+      if (isGmail) {
+        try {
+          const targetEl = (e.target instanceof Element) ? e.target : document;
+          const emptyDT = new DataTransfer();
+          setTimeout(() => {
+            targetEl.dispatchEvent(new DragEvent('drop', {
+              bubbles: true, cancelable: true, dataTransfer: emptyDT
+            }));
+            document.dispatchEvent(new DragEvent('dragleave', { bubbles: true, cancelable: true }));
+            document.dispatchEvent(new DragEvent('dragend', { bubbles: true, cancelable: true }));
+          }, 0);
+        } catch (_) { /* noop */ }
+      }
+    },
+    true
+  );
 
-      // 빈 DataTransfer 생성
-      const emptyDT = new DataTransfer();
-
-      // 약간의 지연 후(주입 완료 보장), 합성 이벤트 전파
-      setTimeout(() => {
-        // drop (빈 파일) – 업로드는 일어나지 않음, 오버레이 정리 트리거
-        targetEl.dispatchEvent(new DragEvent('drop', {
-          bubbles: true,
-          cancelable: true,
-          dataTransfer: emptyDT
-        }));
-        // dragleave / dragend – 추가로 오버레이 정리에 도움
-        document.dispatchEvent(new DragEvent('dragleave', { bubbles: true, cancelable: true }));
-        document.dispatchEvent(new DragEvent('dragend', { bubbles: true, cancelable: true }));
-      }, 0);
-    } catch (_) {
-      // 합성 이벤트가 실패해도 치명적이지 않음. (대부분의 환경에서 동작)
-    }
-  },
-  true // 캡처 단계
-);
-// ---------- (수정) 붙여넣기: 캡처 단계에서 완전 차단 후 한 번만 주입 ----------
+    // ---------- 붙여넣기: files 비어있는 브라우저 대비(items 경로 포함) ----------
+  // ---------- 붙여넣기: items 우선 + 중복 제거 ----------
   document.addEventListener(
     'paste',
     (e) => {
       const cd = e.clipboardData;
       if (!cd) return;
 
-      const files = Array.from(cd.files || []);
-      if (files.length === 0) return;
+      // 1) items에서 file 먼저 수집 (있으면 files는 무시)
+      const itemsFiles = [];
+      for (const it of Array.from(cd.items || [])) {
+        if (it && it.kind === 'file') {
+          const f = it.getAsFile();
+          if (f) itemsFiles.push(f);
+        }
+      }
 
-      const { files: nfiles, changed } = normalizeFiles(files);
-      if (!changed) return; // 정규화 필요 없으면 Gmail 기본 처리
+      let collected = [];
+      if (itemsFiles.length > 0) {
+        collected = itemsFiles;
+      } else {
+        // items에 file이 없을 때만 files 사용 (일부 환경 호환)
+        collected = Array.from(cd.files || []);
+      }
 
-      const input = findNearestGmailFileInput(e.target);
+      if (collected.length === 0) return; // 파일 없으면 기본 동작
+
+      // 2) 중복 제거 (name|size|type|lastModified 키)
+      const uniq = new Map();
+      for (const f of collected) {
+        const key = [
+          (f.name || ''),
+          String(f.size || 0),
+          (f.type || ''),
+          String(f.lastModified || 0)
+        ].join('|');
+        if (!uniq.has(key)) uniq.set(key, f);
+      }
+      const uniqueFiles = Array.from(uniq.values());
+
+      // 3) 이름 생성/정규화
+      function guessExtByType(mime) {
+        if (!mime) return '';
+        const m = mime.toLowerCase();
+        if (m.includes('png')) return '.png';
+        if (m.includes('jpeg') || m.includes('jpg')) return '.jpg';
+        if (m.includes('gif')) return '.gif';
+        if (m.includes('webp')) return '.webp';
+        if (m.includes('pdf')) return '.pdf';
+        if (m.includes('plain')) return '.txt';
+        if (m.includes('html')) return '.html';
+        return '';
+      }
+
+      const now = new Date();
+      const ts = now.getFullYear().toString()
+        + String(now.getMonth() + 1).padStart(2, '0')
+        + String(now.getDate()).padStart(2, '0') + '-'
+        + String(now.getHours()).padStart(2, '0')
+        + String(now.getMinutes()).padStart(2, '0')
+        + String(now.getSeconds()).padStart(2, '0');
+
+      const normalizedFiles = [];
+      for (const f of uniqueFiles) {
+        let name = (f.name || '').trim();
+        if (!name) name = `pasted-${ts}${guessExtByType(f.type)}`;
+        const nfcName = name.normalize('NFC');
+        normalizedFiles.push(new File([f], nfcName, { type: f.type, lastModified: f.lastModified }));
+      }
+
+      // 4) 대상 input 찾기
+      const input = (function findNearestFileInput(fromEl) {
+        let scope = null;
+        if (fromEl instanceof Element) {
+          scope = fromEl.closest('[role="dialog"]')  // Gmail compose
+              || fromEl.closest('[aria-label="Message"]')
+              || fromEl.closest('[aria-label="Message body"]')
+              || fromEl.closest('[aria-label="Type a message"]')
+              || fromEl.closest('[data-topic-id]')
+              || fromEl.closest('[role="textbox"]');
+        }
+        const roots = scope ? [scope, document] : [document];
+        for (const root of roots) {
+          const cands = root.querySelectorAll('input[type="file"][multiple], input[type="file"]');
+          if (cands.length) return cands[0];
+        }
+        return null;
+      })(e.target);
+
       if (!input) return;
 
-      // Gmail의 paste 파일 처리까지 완전히 차단
+      // 5) 기본 붙여넣기 차단 후 한 번만 주입
       e.preventDefault();
       e.stopImmediatePropagation();
       e.stopPropagation();
 
-      injectFilesToInput(input, nfiles, { dispatch: true });
+      const dt = new DataTransfer();
+      for (const f of normalizedFiles) dt.items.add(f);
+      try {
+        input.files = dt.files;
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+      } catch (_) { /* noop */ }
     },
-    true // 캡처 단계
+    true
   );
 })();
